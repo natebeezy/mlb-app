@@ -79,19 +79,11 @@ function App() {
   const handleRefresh = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/refresh-cache`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: selectedDate })
-      });
-      const data = await response.json();
-      setGames(data.games || []);
-      setDataFreshness(new Date());
+      await fetch(`${API_BASE}/refresh-cache?date=${selectedDate}`, { method: 'POST' });
     } catch (error) {
       console.error('Error refreshing cache:', error);
-    } finally {
-      setLoading(false);
     }
+    await fetchGames(selectedDate);
   };
 
   const filteredGames = games.filter(game => {
