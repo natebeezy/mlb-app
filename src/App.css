@@ -488,6 +488,123 @@ body {
 }
 
 /* ============================================
+   LINEUP PANEL
+   ============================================ */
+
+.lineup-not-confirmed {
+  text-align: center;
+  padding: var(--spacing-xl);
+  background-color: var(--bg-card);
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--border-accent);
+  color: var(--text-secondary);
+}
+
+.lineup-note {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  margin-top: var(--spacing-sm);
+}
+
+.lineup-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.lineup-table-wrapper {
+  background-color: var(--bg-card);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+}
+
+.lineup-table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: linear-gradient(90deg, rgba(45, 90, 61, 0.3) 0%, transparent 100%);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.lineup-team-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.lineup-vs-pitcher {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+}
+
+.lineup-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.lineup-table th {
+  padding: var(--spacing-sm) var(--spacing-md);
+  text-align: left;
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--bg-dark-secondary);
+  font-weight: 600;
+}
+
+.lineup-table td {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid rgba(42, 51, 64, 0.5);
+}
+
+.lineup-table tr:last-child td {
+  border-bottom: none;
+}
+
+.lineup-table tr:hover td {
+  background-color: rgba(255, 107, 53, 0.05);
+}
+
+.batting-order {
+  color: var(--text-tertiary);
+  font-weight: 600;
+  width: 24px;
+  font-family: var(--font-mono);
+}
+
+.batter-name-cell {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.position-cell {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+}
+
+.stat-cell {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent-hot);
+}
+
+.vs-pitcher-cell {
+  color: var(--text-secondary) !important;
+  font-size: 0.8rem;
+}
+
+.xstat-great { color: #00c851 !important; }
+.xstat-good  { color: var(--accent-high) !important; }
+.xstat-avg   { color: var(--accent-medium) !important; }
+.xstat-poor  { color: var(--accent-low) !important; }
+
+/* ============================================
    PITCHER MATCHUP PANEL
    ============================================ */
 

@@ -280,6 +280,135 @@ def fetch_batter_matchups(batter_id: int, pitcher_id: int, pitcher_hand: str) ->
         logger.error(f"Error fetching matchup data: {e}")
         return None
 
+def fetch_savant_stats() -> dict:
+    """Fetch xBA and xwOBA for all batters from Baseball Savant"""
+    try:
+        import requests, csv, io
+        cache_key = "savant_xstats_2026"
+        cached = get_cache(cache_key)
+        if cached:
+            return cached
+
+        url = "https://baseballsavant.mlb.com/leaderboard/expected_statistics?type=batter&year=2026&position=&team=&min=10&csv=true"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, timeout=20, headers=headers)
+        response.raise_for_status()
+
+        stats = {}
+        text = response.content.decode('utf-8-sig')  # strip BOM
+        reader = csv.DictReader(io.StringIO(text))
+        for row in reader:
+            try:
+                player_id = int(row.get('player_id', 0))
+                if player_id:
+                    stats[player_id] = {
+                        'xba': float(row.get('est_ba') or 0),
+                        'xwoba': float(row.get('est_woba') or 0),
+                    }
+            except (ValueError, KeyError):
+                continue
+
+        set_cache(cache_key, stats, hours=12)
+        logger.info(f"Fetched Savant xstats for {len(stats)} batters")
+        return stats
+    except Exception as e:
+        logger.error(f"Error fetching Savant stats: {e}")
+        return {}
+
+
+def fetch_batter_season_stats(player_id: int) -> dict:
+    """Fetch batter 2026 season hitting stats"""
+    try:
+        import requests
+        cache_key = f"batter_season_{player_id}_2026"
+        cached = get_cache(cache_key)
+        if cached:
+            return cached
+
+        url = f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=season&season=2026&group=hitting"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        stats = {}
+        for stat_group in data.get('stats', []):
+            splits = stat_group.get('splits', [])
+            if splits:
+                s = splits[0].get('stat', {})
+                stats = {
+                    'ba': float(s.get('avg') or 0) or None,
+                    'obp': float(s.get('obp') or 0) or None,
+                    'slg': float(s.get('slg') or 0) or None,
+                    'ab': s.get('atBats', 0),
+                }
+                break
+
+        set_cache(cache_key, stats, hours=6)
+        return stats
+    except Exception as e:
+        logger.error(f"Error fetching batter season stats for {player_id}: {e}")
+        return {}
+
+
+def fetch_batter_vs_pitcher(batter_id: int, pitcher_id: int) -> dict:
+    """Fetch career batter vs pitcher matchup stats"""
+    try:
+        import requests
+        cache_key = f"bvp_{batter_id}_{pitcher_id}"
+        cached = get_cache(cache_key)
+        if cached:
+            return cached
+
+        url = f"https://statsapi.mlb.com/api/v1/people/{batter_id}/stats?stats=vsPlayerTotal&opposingPlayerId={pitcher_id}&group=hitting"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        result = {'ba': None, 'ab': 0, 'hits': 0}
+        for stat_group in data.get('stats', []):
+            splits = stat_group.get('splits', [])
+            if splits:
+                s = splits[0].get('stat', {})
+                ab = s.get('atBats', 0)
+                result = {
+                    'ba': float(s.get('avg') or 0) if ab > 0 else None,
+                    'ab': ab,
+                    'hits': s.get('hits', 0),
+                }
+                break
+
+        set_cache(cache_key, result, hours=24)
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching BvP {batter_id} vs {pitcher_id}: {e}")
+        return {'ba': None, 'ab': 0, 'hits': 0}
+
+
+def fetch_game_lineup_raw(game_id: str) -> dict:
+    """Fetch confirmed lineup from MLB game live feed"""
+    try:
+        import requests
+        url = f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live"
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        teams = data.get('liveData', {}).get('boxscore', {}).get('teams', {})
+        home = teams.get('home', {})
+        away = teams.get('away', {})
+
+        return {
+            'confirmed': len(home.get('battingOrder', [])) > 0,
+            'home_batting_order': home.get('battingOrder', []),
+            'away_batting_order': away.get('battingOrder', []),
+            'home_players': home.get('players', {}),
+            'away_players': away.get('players', {}),
+        }
+    except Exception as e:
+        logger.error(f"Error fetching lineup for game {game_id}: {e}")
+        return {'confirmed': False, 'home_batting_order': [], 'away_batting_order': [], 'home_players': {}, 'away_players': {}}
+
+
 def fetch_game_details(game_id: str) -> dict:
     """Fetch game teams and probable pitchers by gamePk"""
     try:
@@ -461,6 +590,76 @@ async def get_games(date: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/game/{game_id}/lineup")
+async def get_lineup(game_id: str):
+    """
+    Returns confirmed lineup (or empty if not yet announced) with per-batter
+    BA, xBA, xwOBA, and career BA vs the opposing starting pitcher.
+    """
+    try:
+        cache_key = f"lineup_analysis_{game_id}"
+        cached = get_cache(cache_key)
+        if cached and cached.get('lineup_confirmed'):
+            return cached
+
+        game_details = fetch_game_details(game_id)
+        if not game_details:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+
+        raw = fetch_game_lineup_raw(game_id)
+        confirmed = raw.get('confirmed', False)
+        savant = fetch_savant_stats()
+
+        home_pitcher_id = game_details.get('home_pitcher_id')
+        away_pitcher_id = game_details.get('away_pitcher_id')
+
+        def build_lineup(batting_order, players_dict, opp_pitcher_id):
+            lineup = []
+            for i, player_id in enumerate(batting_order):
+                pdata = players_dict.get(f"ID{player_id}", {})
+                name = pdata.get('person', {}).get('fullName', 'Unknown')
+                pos = pdata.get('position', {}).get('abbreviation', '')
+
+                season = fetch_batter_season_stats(player_id)
+                vs_p = fetch_batter_vs_pitcher(player_id, opp_pitcher_id) if opp_pitcher_id else {}
+                sx = savant.get(player_id, {})
+
+                lineup.append({
+                    'batting_order': i + 1,
+                    'player_id': player_id,
+                    'name': name,
+                    'position': pos,
+                    'ba': season.get('ba'),
+                    'xba': sx.get('xba') or None,
+                    'xwoba': sx.get('xwoba') or None,
+                    'vs_pitcher_ba': vs_p.get('ba'),
+                    'vs_pitcher_ab': vs_p.get('ab', 0),
+                    'vs_pitcher_hits': vs_p.get('hits', 0),
+                })
+            return lineup
+
+        result = {
+            'game_id': game_id,
+            'lineup_confirmed': confirmed,
+            'home_team': game_details['home_team_name'],
+            'away_team': game_details['away_team_name'],
+            'home_pitcher': {'name': game_details['home_pitcher_name'], 'id': home_pitcher_id},
+            'away_pitcher': {'name': game_details['away_pitcher_name'], 'id': away_pitcher_id},
+            'home_lineup': build_lineup(raw['home_batting_order'], raw['home_players'], away_pitcher_id),
+            'away_lineup': build_lineup(raw['away_batting_order'], raw['away_players'], home_pitcher_id),
+            'timestamp': datetime.now().isoformat(),
+        }
+
+        set_cache(cache_key, result, hours=1 if confirmed else 0.25)
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching lineup for game {game_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/game/{game_id}/analysis")
 async def analyze_game(game_id: str):

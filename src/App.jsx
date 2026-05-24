@@ -13,6 +13,7 @@ function App() {
   const [filterConfidence, setFilterConfidence] = useState('all');
   const [dataFreshness, setDataFreshness] = useState(null);
   const [cacheStats, setCacheStats] = useState(null);
+  const [lineupData, setLineupData] = useState({});
 
   // Fetch games for selected date
   const fetchGames = useCallback(async (date) => {
@@ -28,6 +29,17 @@ function App() {
       setGames(generateSampleGames(date));
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  // Fetch lineup for a game
+  const fetchLineup = useCallback(async (gameId) => {
+    try {
+      const response = await fetch(`${API_BASE}/game/${gameId}/lineup`);
+      const data = await response.json();
+      setLineupData(prev => ({ ...prev, [gameId]: data }));
+    } catch (error) {
+      console.error('Error fetching lineup:', error);
     }
   }, []);
 
@@ -71,8 +83,9 @@ function App() {
 
   const handleExpandGame = (gameId) => {
     setExpandedGame(expandedGame === gameId ? null : gameId);
-    if (!gameAnalysis[gameId] && expandedGame !== gameId) {
-      fetchGameAnalysis(gameId);
+    if (expandedGame !== gameId) {
+      if (!gameAnalysis[gameId]) fetchGameAnalysis(gameId);
+      if (!lineupData[gameId]) fetchLineup(gameId);
     }
   };
 
@@ -152,6 +165,7 @@ function App() {
                 expanded={expandedGame === game.game_id}
                 onExpand={() => handleExpandGame(game.game_id)}
                 analysis={gameAnalysis[game.game_id]}
+                lineup={lineupData[game.game_id]}
               />
             ))
           )}
@@ -174,7 +188,7 @@ function App() {
 }
 
 // Game Card Component
-function GameCard({ game, expanded, onExpand, analysis }) {
+function GameCard({ game, expanded, onExpand, analysis, lineup }) {
   const gameTime = game.time || 'TBA';
   const statusColor = game.status === 'Pre-Game' ? 'pre-game' : 'scheduled';
 
@@ -209,18 +223,23 @@ function GameCard({ game, expanded, onExpand, analysis }) {
         </div>
       </div>
 
-      {expanded && analysis && <GameAnalysisPanel analysis={analysis} />}
+      {expanded && analysis && <GameAnalysisPanel analysis={analysis} lineup={lineup} />}
       {expanded && !analysis && <div className="loading-analysis">Loading analysis...</div>}
     </div>
   );
 }
 
 // Game Analysis Panel
-function GameAnalysisPanel({ analysis }) {
+function GameAnalysisPanel({ analysis, lineup }) {
   if (!analysis) return null;
 
   return (
     <div className="game-analysis">
+      <div className="analysis-section">
+        <h3>📋 Starting Lineups</h3>
+        <LineupPanel lineup={lineup} />
+      </div>
+
       <div className="analysis-section">
         <h3>⚾ Starting Pitchers</h3>
         <PitcherMatchupPanel
@@ -342,6 +361,92 @@ function TeamStatBlock({ stats }) {
       <div className="stat-row"><span>OPS:</span><span className="stat-value">{fmt3(stats.ops)}</span></div>
       <div className="stat-row"><span>HR:</span><span className="stat-value">{stats.home_runs ?? '—'}</span></div>
       <div className="stat-row"><span>R:</span><span className="stat-value">{stats.runs ?? '—'}</span></div>
+    </div>
+  );
+}
+
+// Lineup Panel
+function LineupPanel({ lineup }) {
+  if (!lineup) return <div className="loading-analysis">Loading lineup...</div>;
+
+  if (!lineup.lineup_confirmed) {
+    return (
+      <div className="lineup-not-confirmed">
+        <p>Lineup not yet announced</p>
+        <p className="lineup-note">Check back 3–4 hours before first pitch</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="lineup-panel">
+      <LineupTable
+        teamName={lineup.away_team}
+        pitcher={lineup.home_pitcher}
+        batters={lineup.away_lineup}
+      />
+      <LineupTable
+        teamName={lineup.home_team}
+        pitcher={lineup.away_pitcher}
+        batters={lineup.home_lineup}
+      />
+    </div>
+  );
+}
+
+function LineupTable({ teamName, pitcher, batters }) {
+  const fmt = (v) => v != null ? v.toFixed(3) : '—';
+
+  const xwobaClass = (v) => {
+    if (v == null) return '';
+    if (v >= 0.370) return 'xstat-great';
+    if (v >= 0.340) return 'xstat-good';
+    if (v >= 0.310) return 'xstat-avg';
+    return 'xstat-poor';
+  };
+
+  const xbaClass = (v, ba) => {
+    if (v == null || ba == null) return '';
+    const diff = v - ba;
+    if (diff > 0.020) return 'xstat-good';
+    if (diff < -0.020) return 'xstat-poor';
+    return '';
+  };
+
+  return (
+    <div className="lineup-table-wrapper">
+      <div className="lineup-table-header">
+        <span className="lineup-team-name">{teamName}</span>
+        <span className="lineup-vs-pitcher">vs {pitcher?.name || 'TBA'}</span>
+      </div>
+      <table className="lineup-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Player</th>
+            <th>Pos</th>
+            <th>BA</th>
+            <th>xBA</th>
+            <th>xwOBA</th>
+            <th>vs SP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {batters.map((b) => (
+            <tr key={b.player_id}>
+              <td className="batting-order">{b.batting_order}</td>
+              <td className="batter-name-cell">{b.name}</td>
+              <td className="position-cell">{b.position}</td>
+              <td className="stat-cell">{fmt(b.ba)}</td>
+              <td className={`stat-cell ${xbaClass(b.xba, b.ba)}`}>{fmt(b.xba)}</td>
+              <td className={`stat-cell ${xwobaClass(b.xwoba)}`}>{fmt(b.xwoba)}</td>
+              <td className="stat-cell vs-pitcher-cell">
+                {b.vs_pitcher_ab > 0 ? `${fmt(b.vs_pitcher_ba)} (${b.vs_pitcher_ab} AB)` : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
