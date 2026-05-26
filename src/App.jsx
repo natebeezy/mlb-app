@@ -396,6 +396,8 @@ function LineupPanel({ lineup }) {
 
 function LineupTable({ teamName, pitcher, batters }) {
   const fmt = (v) => v != null ? v.toFixed(3) : '—';
+  const hand = pitcher?.hand || 'R';
+  const handLabel = hand === 'L' ? 'LHP' : 'RHP';
 
   const xwobaClass = (v) => {
     if (v == null) return '';
@@ -413,22 +415,24 @@ function LineupTable({ teamName, pitcher, batters }) {
     return '';
   };
 
+  const vsPitcherBatters = batters.filter(b => b.vs_pitcher != null);
+
   return (
     <div className="lineup-table-wrapper">
       <div className="lineup-table-header">
         <span className="lineup-team-name">{teamName}</span>
-        <span className="lineup-vs-pitcher">vs {pitcher?.name || 'TBA'}</span>
+        <span className="lineup-vs-pitcher">vs {pitcher?.name || 'TBA'} ({handLabel})</span>
       </div>
+
       <table className="lineup-table">
         <thead>
           <tr>
             <th>#</th>
             <th>Player</th>
             <th>Pos</th>
-            <th>BA</th>
+            <th>BA vs {handLabel}</th>
             <th>xBA</th>
             <th>xwOBA</th>
-            <th>vs SP</th>
           </tr>
         </thead>
         <tbody>
@@ -437,16 +441,41 @@ function LineupTable({ teamName, pitcher, batters }) {
               <td className="batting-order">{b.batting_order}</td>
               <td className="batter-name-cell">{b.name}</td>
               <td className="position-cell">{b.position}</td>
-              <td className="stat-cell">{fmt(b.ba)}</td>
-              <td className={`stat-cell ${xbaClass(b.xba, b.ba)}`}>{fmt(b.xba)}</td>
+              <td className="stat-cell">{fmt(b.ba_vs_hand)}</td>
+              <td className={`stat-cell ${xbaClass(b.xba, b.ba_vs_hand)}`}>{fmt(b.xba)}</td>
               <td className={`stat-cell ${xwobaClass(b.xwoba)}`}>{fmt(b.xwoba)}</td>
-              <td className="stat-cell vs-pitcher-cell">
-                {b.vs_pitcher_ab > 0 ? `${fmt(b.vs_pitcher_ba)} (${b.vs_pitcher_ab} AB)` : '—'}
-              </td>
             </tr>
           ))}
         </tbody>
       </table>
+
+      {vsPitcherBatters.length > 0 && (
+        <div className="vs-sp-section">
+          <div className="vs-sp-header">Career vs {pitcher?.name || 'SP'} (10+ AB)</div>
+          <table className="lineup-table vs-sp-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Player</th>
+                <th>AB</th>
+                <th>H</th>
+                <th>BA</th>
+              </tr>
+            </thead>
+            <tbody>
+              {vsPitcherBatters.map((b) => (
+                <tr key={b.player_id}>
+                  <td className="batting-order">{b.batting_order}</td>
+                  <td className="batter-name-cell">{b.name}</td>
+                  <td className="stat-cell">{b.vs_pitcher.ab}</td>
+                  <td className="stat-cell">{b.vs_pitcher.hits}</td>
+                  <td className="stat-cell">{fmt(b.vs_pitcher.ba)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

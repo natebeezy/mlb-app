@@ -384,6 +384,71 @@ def fetch_batter_vs_pitcher(batter_id: int, pitcher_id: int) -> dict:
         return {'ba': None, 'ab': 0, 'hits': 0}
 
 
+def fetch_pitcher_handedness(pitcher_id: int) -> str:
+    """Returns 'L' or 'R' for pitcher's throwing hand"""
+    try:
+        import requests
+        cache_key = f"pitcher_hand_{pitcher_id}"
+        cached = get_cache(cache_key)
+        if cached:
+            return cached.get('hand', 'R')
+
+        url = f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        people = data.get('people', [])
+        hand = 'R'
+        if people:
+            hand = people[0].get('pitchHand', {}).get('code', 'R')
+
+        set_cache(cache_key, {'hand': hand}, hours=168)
+        return hand
+    except Exception as e:
+        logger.error(f"Error fetching pitcher handedness for {pitcher_id}: {e}")
+        return 'R'
+
+
+def fetch_batter_vs_hand(player_id: int, hand: str) -> dict:
+    """Fetch batter 2026 season stats vs LHP ('L') or RHP ('R')"""
+    try:
+        import requests
+        site_code = 'vl' if hand == 'L' else 'vr'
+        cache_key = f"batter_vs_hand_{player_id}_{site_code}_2026"
+        cached = get_cache(cache_key)
+        if cached:
+            return cached
+
+        url = (
+            f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats"
+            f"?stats=statSplits&season=2026&group=hitting&sitCodes={site_code}"
+        )
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        stats = {}
+        for stat_group in data.get('stats', []):
+            splits = stat_group.get('splits', [])
+            if splits:
+                s = splits[0].get('stat', {})
+                stats = {
+                    'ba': float(s.get('avg') or 0) or None,
+                    'obp': float(s.get('obp') or 0) or None,
+                    'slg': float(s.get('slg') or 0) or None,
+                    'pa': s.get('plateAppearances', 0),
+                    'ab': s.get('atBats', 0),
+                }
+                break
+
+        set_cache(cache_key, stats, hours=6)
+        return stats
+    except Exception as e:
+        logger.error(f"Error fetching batter vs hand for {player_id}: {e}")
+        return {}
+
+
 def fetch_game_lineup_raw(game_id: str) -> dict:
     """Fetch confirmed lineup from MLB game live feed"""
     try:
@@ -614,28 +679,39 @@ async def get_lineup(game_id: str):
         home_pitcher_id = game_details.get('home_pitcher_id')
         away_pitcher_id = game_details.get('away_pitcher_id')
 
-        def build_lineup(batting_order, players_dict, opp_pitcher_id):
+        home_pitcher_hand = fetch_pitcher_handedness(home_pitcher_id) if home_pitcher_id else 'R'
+        away_pitcher_hand = fetch_pitcher_handedness(away_pitcher_id) if away_pitcher_id else 'R'
+
+        def build_lineup(batting_order, players_dict, opp_pitcher_id, opp_pitcher_hand):
             lineup = []
             for i, player_id in enumerate(batting_order):
                 pdata = players_dict.get(f"ID{player_id}", {})
                 name = pdata.get('person', {}).get('fullName', 'Unknown')
                 pos = pdata.get('position', {}).get('abbreviation', '')
 
-                season = fetch_batter_season_stats(player_id)
-                vs_p = fetch_batter_vs_pitcher(player_id, opp_pitcher_id) if opp_pitcher_id else {}
+                hand_splits = fetch_batter_vs_hand(player_id, opp_pitcher_hand)
                 sx = savant.get(player_id, {})
+
+                vs_p_raw = fetch_batter_vs_pitcher(player_id, opp_pitcher_id) if opp_pitcher_id else {}
+                vs_p_ab = vs_p_raw.get('ab', 0)
+                vs_pitcher = None
+                if vs_p_ab >= 10:
+                    vs_pitcher = {
+                        'ba': vs_p_raw.get('ba'),
+                        'ab': vs_p_ab,
+                        'hits': vs_p_raw.get('hits', 0),
+                    }
 
                 lineup.append({
                     'batting_order': i + 1,
                     'player_id': player_id,
                     'name': name,
                     'position': pos,
-                    'ba': season.get('ba'),
+                    'ba_vs_hand': hand_splits.get('ba'),
+                    'hand': opp_pitcher_hand,
                     'xba': sx.get('xba') or None,
                     'xwoba': sx.get('xwoba') or None,
-                    'vs_pitcher_ba': vs_p.get('ba'),
-                    'vs_pitcher_ab': vs_p.get('ab', 0),
-                    'vs_pitcher_hits': vs_p.get('hits', 0),
+                    'vs_pitcher': vs_pitcher,
                 })
             return lineup
 
@@ -644,10 +720,10 @@ async def get_lineup(game_id: str):
             'lineup_confirmed': confirmed,
             'home_team': game_details['home_team_name'],
             'away_team': game_details['away_team_name'],
-            'home_pitcher': {'name': game_details['home_pitcher_name'], 'id': home_pitcher_id},
-            'away_pitcher': {'name': game_details['away_pitcher_name'], 'id': away_pitcher_id},
-            'home_lineup': build_lineup(raw['home_batting_order'], raw['home_players'], away_pitcher_id),
-            'away_lineup': build_lineup(raw['away_batting_order'], raw['away_players'], home_pitcher_id),
+            'home_pitcher': {'name': game_details['home_pitcher_name'], 'id': home_pitcher_id, 'hand': home_pitcher_hand},
+            'away_pitcher': {'name': game_details['away_pitcher_name'], 'id': away_pitcher_id, 'hand': away_pitcher_hand},
+            'home_lineup': build_lineup(raw['home_batting_order'], raw['home_players'], away_pitcher_id, away_pitcher_hand),
+            'away_lineup': build_lineup(raw['away_batting_order'], raw['away_players'], home_pitcher_id, home_pitcher_hand),
             'timestamp': datetime.now().isoformat(),
         }
 
