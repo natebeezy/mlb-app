@@ -444,15 +444,15 @@ function LineupTable({ teamName, pitcher, batters }) {
               <th className="col-pos">Pos</th>
               <th className="col-stat">
                 BA vs {handLabel}
-                <span className="col-sub">30 days</span>
+                <span className="col-sub">last 20 days</span>
               </th>
               <th className="col-stat">
                 xBA
-                <span className="col-sub">season</span>
+                <span className="col-sub">last 20 days</span>
               </th>
               <th className="col-stat">
                 xwOBA
-                <span className="col-sub">season</span>
+                <span className="col-sub">last 20 days</span>
               </th>
             </tr>
           </thead>

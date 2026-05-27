@@ -280,36 +280,43 @@ def fetch_batter_matchups(batter_id: int, pitcher_id: int, pitcher_hand: str) ->
         logger.error(f"Error fetching matchup data: {e}")
         return None
 
-def fetch_savant_stats() -> dict:
-    """Fetch xBA and xwOBA for all batters from Baseball Savant"""
+def fetch_savant_stats(days: int = 20) -> dict:
+    """Fetch xBA and xwOBA from Baseball Savant for the last N days"""
     try:
         import requests, csv, io
-        cache_key = "savant_xstats_2026"
+        today = datetime.now().strftime('%Y-%m-%d')
+        start = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+
+        cache_key = f"savant_xstats_{days}d_{today}"
         cached = get_cache(cache_key)
         if cached:
             return cached
 
-        url = "https://baseballsavant.mlb.com/leaderboard/expected_statistics?type=batter&year=2026&position=&team=&min=10&csv=true"
+        url = (
+            f"https://baseballsavant.mlb.com/leaderboard/expected_statistics"
+            f"?type=batter&year=2026&position=&team=&min=1&csv=true"
+            f"&game_date_gt={start}&game_date_lt={today}"
+        )
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(url, timeout=20, headers=headers)
         response.raise_for_status()
 
         stats = {}
-        text = response.content.decode('utf-8-sig')  # strip BOM
+        text = response.content.decode('utf-8-sig')
         reader = csv.DictReader(io.StringIO(text))
         for row in reader:
             try:
                 player_id = int(row.get('player_id', 0))
                 if player_id:
                     stats[player_id] = {
-                        'xba': float(row.get('est_ba') or 0),
-                        'xwoba': float(row.get('est_woba') or 0),
+                        'xba': float(row.get('est_ba') or 0) or None,
+                        'xwoba': float(row.get('est_woba') or 0) or None,
                     }
             except (ValueError, KeyError):
                 continue
 
-        set_cache(cache_key, stats, hours=12)
-        logger.info(f"Fetched Savant xstats for {len(stats)} batters")
+        set_cache(cache_key, stats, hours=6)
+        logger.info(f"Fetched Savant xstats ({days}d) for {len(stats)} batters")
         return stats
     except Exception as e:
         logger.error(f"Error fetching Savant stats: {e}")
@@ -416,7 +423,7 @@ def fetch_batter_vs_hand(player_id: int, hand: str) -> dict:
         import requests
         site_code = 'vl' if hand == 'L' else 'vr'
         today = datetime.now().strftime('%Y-%m-%d')
-        start = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        start = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
 
         cache_key = f"batter_vs_hand_{player_id}_{site_code}_{today}"
         cached = get_cache(cache_key)
@@ -442,11 +449,11 @@ def fetch_batter_vs_hand(player_id: int, hand: str) -> dict:
                     }
             return {}
 
-        # Try recent 30-day window (≈ last 50 PA for vs-RHP, shorter for vs-LHP)
+        # Last 20 days vs the relevant handedness
         stats = _parse(f"{base}&startDate={start}&endDate={today}")
 
         # Fall back to full season when sample is too thin
-        if not stats or stats.get('pa', 0) < 15:
+        if not stats or stats.get('pa', 0) < 10:
             season = _parse(base)
             if season and season.get('pa', 0) >= stats.get('pa', 0):
                 season['is_season_fallback'] = True
