@@ -417,53 +417,85 @@ def fetch_pitcher_handedness(pitcher_id: int) -> str:
         return 'R'
 
 
-def fetch_batter_vs_hand(player_id: int, hand: str) -> dict:
-    """Fetch batter stats vs LHP/RHP — tries last 30 days first, falls back to full season"""
+def fetch_batter_statcast_splits(player_id: int, hand: str, days: int = 20) -> dict:
+    """
+    Fetch batter BA, xBA, xwOBA vs LHP/RHP for the last N days
+    using Statcast PA-level search data, aggregated per batter.
+    """
     try:
-        import requests
-        site_code = 'vl' if hand == 'L' else 'vr'
+        import requests, csv, io
         today = datetime.now().strftime('%Y-%m-%d')
-        start = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
+        start = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
-        cache_key = f"batter_vs_hand_{player_id}_{site_code}_{today}"
+        cache_key = f"statcast_splits_{player_id}_{hand}_{today}"
         cached = get_cache(cache_key)
         if cached:
             return cached
 
-        base = (
-            f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats"
-            f"?group=hitting&sitCodes={site_code}&stats=statSplits&season=2026"
+        url = (
+            f"https://baseballsavant.mlb.com/statcast_search/csv"
+            f"?all=true&player_type=batter&hfSea=2026%7C&hfGT=R%7C"
+            f"&batters_lookup%5B%5D={player_id}&pitcher_throws={hand}"
+            f"&game_date_gt={start}&game_date_lt={today}"
+            f"&hfFlag=is_pa%7C&sort_col=game_date&sort_order=desc"
+            f"&min_pitches=0&min_results=0&type=details&csv=true"
         )
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, timeout=30, headers=headers)
+        response.raise_for_status()
 
-        def _parse(url):
-            r = requests.get(url, timeout=10)
-            r.raise_for_status()
-            for sg in r.json().get('stats', []):
-                splits = sg.get('splits', [])
-                if splits:
-                    s = splits[0].get('stat', {})
-                    return {
-                        'ba': float(s.get('avg') or 0) or None,
-                        'pa': int(s.get('plateAppearances') or 0),
-                        'ab': int(s.get('atBats') or 0),
-                    }
-            return {}
+        rows = list(csv.DictReader(io.StringIO(response.content.decode('utf-8-sig'))))
 
-        # Last 20 days vs the relevant handedness
-        stats = _parse(f"{base}&startDate={start}&endDate={today}")
+        if not rows:
+            result = {'ba': None, 'xba': None, 'xwoba': None, 'pa': 0}
+            set_cache(cache_key, result, hours=3)
+            return result
 
-        # Fall back to full season when sample is too thin
-        if not stats or stats.get('pa', 0) < 10:
-            season = _parse(base)
-            if season and season.get('pa', 0) >= stats.get('pa', 0):
-                season['is_season_fallback'] = True
-                stats = season
+        hit_events = {'single', 'double', 'triple', 'home_run'}
+        non_ab_events = {'walk', 'hit_by_pitch', 'sac_fly', 'sac_bunt',
+                         'sac_fly_double_play', 'catcher_interf', 'intent_walk'}
 
-        set_cache(cache_key, stats, hours=3)
-        return stats
+        hits = abs_ = 0
+        xba_vals = []
+        xwoba_vals = []
+
+        for row in rows:
+            event = (row.get('events') or '').strip().lower()
+            if not event:
+                continue
+
+            if event not in non_ab_events:
+                abs_ += 1
+            if event in hit_events:
+                hits += 1
+
+            xba_raw = (row.get('estimated_ba_using_speedangle') or '').strip()
+            if xba_raw:
+                try:
+                    xba_vals.append(float(xba_raw))
+                except ValueError:
+                    pass
+
+            xwoba_raw = (row.get('estimated_woba_using_speedangle') or '').strip()
+            if xwoba_raw:
+                try:
+                    xwoba_vals.append(float(xwoba_raw))
+                except ValueError:
+                    pass
+
+        result = {
+            'ba':    round(hits / abs_, 3) if abs_ > 0 else None,
+            'xba':   round(sum(xba_vals) / len(xba_vals), 3) if xba_vals else None,
+            'xwoba': round(sum(xwoba_vals) / len(xwoba_vals), 3) if xwoba_vals else None,
+            'pa':    len(rows),
+        }
+        set_cache(cache_key, result, hours=3)
+        logger.info(f"Statcast splits {player_id} vs {hand}HP ({days}d): {result}")
+        return result
+
     except Exception as e:
-        logger.error(f"Error fetching batter vs hand for {player_id}: {e}")
-        return {}
+        logger.error(f"Error fetching Statcast splits for {player_id} vs {hand}: {e}")
+        return {'ba': None, 'xba': None, 'xwoba': None, 'pa': 0}
 
 
 def fetch_game_lineup_raw(game_id: str) -> dict:
@@ -691,7 +723,6 @@ async def get_lineup(game_id: str):
 
         raw = fetch_game_lineup_raw(game_id)
         confirmed = raw.get('confirmed', False)
-        savant = fetch_savant_stats()
 
         home_pitcher_id = game_details.get('home_pitcher_id')
         away_pitcher_id = game_details.get('away_pitcher_id')
@@ -706,8 +737,8 @@ async def get_lineup(game_id: str):
                 name = pdata.get('person', {}).get('fullName', 'Unknown')
                 pos = pdata.get('position', {}).get('abbreviation', '')
 
-                hand_splits = fetch_batter_vs_hand(player_id, opp_pitcher_hand)
-                sx = savant.get(player_id, {})
+                # All three stats from Statcast: BA/xBA/xwOBA vs this handedness, last 20 days
+                splits = fetch_batter_statcast_splits(player_id, opp_pitcher_hand, days=20)
 
                 vs_p_raw = fetch_batter_vs_pitcher(player_id, opp_pitcher_id) if opp_pitcher_id else {}
                 vs_p_ab = vs_p_raw.get('ab', 0)
@@ -724,11 +755,11 @@ async def get_lineup(game_id: str):
                     'player_id': player_id,
                     'name': name,
                     'position': pos,
-                    'ba_vs_hand': hand_splits.get('ba'),
-                    'pa_vs_hand': hand_splits.get('pa', 0),
+                    'ba_vs_hand': splits.get('ba'),
+                    'xba':        splits.get('xba'),
+                    'xwoba':      splits.get('xwoba'),
+                    'pa_vs_hand': splits.get('pa', 0),
                     'hand': opp_pitcher_hand,
-                    'xba': sx.get('xba') or None,
-                    'xwoba': sx.get('xwoba') or None,
                     'vs_pitcher': vs_pitcher,
                 })
             return lineup
