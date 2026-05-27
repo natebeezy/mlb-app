@@ -411,38 +411,48 @@ def fetch_pitcher_handedness(pitcher_id: int) -> str:
 
 
 def fetch_batter_vs_hand(player_id: int, hand: str) -> dict:
-    """Fetch batter 2026 season stats vs LHP ('L') or RHP ('R')"""
+    """Fetch batter stats vs LHP/RHP — tries last 30 days first, falls back to full season"""
     try:
         import requests
         site_code = 'vl' if hand == 'L' else 'vr'
-        cache_key = f"batter_vs_hand_{player_id}_{site_code}_2026"
+        today = datetime.now().strftime('%Y-%m-%d')
+        start = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+
+        cache_key = f"batter_vs_hand_{player_id}_{site_code}_{today}"
         cached = get_cache(cache_key)
         if cached:
             return cached
 
-        url = (
+        base = (
             f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats"
-            f"?stats=statSplits&season=2026&group=hitting&sitCodes={site_code}"
+            f"?group=hitting&sitCodes={site_code}&stats=statSplits&season=2026"
         )
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
 
-        stats = {}
-        for stat_group in data.get('stats', []):
-            splits = stat_group.get('splits', [])
-            if splits:
-                s = splits[0].get('stat', {})
-                stats = {
-                    'ba': float(s.get('avg') or 0) or None,
-                    'obp': float(s.get('obp') or 0) or None,
-                    'slg': float(s.get('slg') or 0) or None,
-                    'pa': s.get('plateAppearances', 0),
-                    'ab': s.get('atBats', 0),
-                }
-                break
+        def _parse(url):
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            for sg in r.json().get('stats', []):
+                splits = sg.get('splits', [])
+                if splits:
+                    s = splits[0].get('stat', {})
+                    return {
+                        'ba': float(s.get('avg') or 0) or None,
+                        'pa': int(s.get('plateAppearances') or 0),
+                        'ab': int(s.get('atBats') or 0),
+                    }
+            return {}
 
-        set_cache(cache_key, stats, hours=6)
+        # Try recent 30-day window (≈ last 50 PA for vs-RHP, shorter for vs-LHP)
+        stats = _parse(f"{base}&startDate={start}&endDate={today}")
+
+        # Fall back to full season when sample is too thin
+        if not stats or stats.get('pa', 0) < 15:
+            season = _parse(base)
+            if season and season.get('pa', 0) >= stats.get('pa', 0):
+                season['is_season_fallback'] = True
+                stats = season
+
+        set_cache(cache_key, stats, hours=3)
         return stats
     except Exception as e:
         logger.error(f"Error fetching batter vs hand for {player_id}: {e}")
@@ -708,6 +718,7 @@ async def get_lineup(game_id: str):
                     'name': name,
                     'position': pos,
                     'ba_vs_hand': hand_splits.get('ba'),
+                    'pa_vs_hand': hand_splits.get('pa', 0),
                     'hand': opp_pitcher_hand,
                     'xba': sx.get('xba') or None,
                     'xwoba': sx.get('xwoba') or None,

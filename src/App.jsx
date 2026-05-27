@@ -383,21 +383,29 @@ function LineupPanel({ lineup }) {
       <LineupTable
         teamName={lineup.away_team}
         pitcher={lineup.home_pitcher}
-        batters={lineup.away_lineup}
+        batters={lineup.away_lineup || []}
       />
       <LineupTable
         teamName={lineup.home_team}
         pitcher={lineup.away_pitcher}
-        batters={lineup.home_lineup}
+        batters={lineup.home_lineup || []}
       />
     </div>
   );
 }
 
 function LineupTable({ teamName, pitcher, batters }) {
-  const fmt = (v) => v != null ? v.toFixed(3) : '—';
+  const fmt3 = (v) => v != null ? v.toFixed(3) : '—';
   const hand = pitcher?.hand || 'R';
   const handLabel = hand === 'L' ? 'LHP' : 'RHP';
+
+  const baClass = (v) => {
+    if (v == null) return '';
+    if (v >= 0.300) return 'xstat-great';
+    if (v >= 0.270) return 'xstat-good';
+    if (v >= 0.240) return 'xstat-avg';
+    return 'xstat-poor';
+  };
 
   const xwobaClass = (v) => {
     if (v == null) return '';
@@ -420,60 +428,94 @@ function LineupTable({ teamName, pitcher, batters }) {
   return (
     <div className="lineup-table-wrapper">
       <div className="lineup-table-header">
-        <span className="lineup-team-name">{teamName}</span>
-        <span className="lineup-vs-pitcher">vs {pitcher?.name || 'TBA'} ({handLabel})</span>
+        <div className="lineup-header-left">
+          <span className="lineup-team-name">{teamName}</span>
+          <span className="lineup-handedness-badge">{handLabel}</span>
+        </div>
+        <span className="lineup-vs-pitcher">vs {pitcher?.name || 'TBA'}</span>
       </div>
 
-      <table className="lineup-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Player</th>
-            <th>Pos</th>
-            <th>BA vs {handLabel}</th>
-            <th>xBA</th>
-            <th>xwOBA</th>
-          </tr>
-        </thead>
-        <tbody>
-          {batters.map((b) => (
-            <tr key={b.player_id}>
-              <td className="batting-order">{b.batting_order}</td>
-              <td className="batter-name-cell">{b.name}</td>
-              <td className="position-cell">{b.position}</td>
-              <td className="stat-cell">{fmt(b.ba_vs_hand)}</td>
-              <td className={`stat-cell ${xbaClass(b.xba, b.ba_vs_hand)}`}>{fmt(b.xba)}</td>
-              <td className={`stat-cell ${xwobaClass(b.xwoba)}`}>{fmt(b.xwoba)}</td>
+      <div className="lineup-scroll">
+        <table className="lineup-table">
+          <thead>
+            <tr>
+              <th className="col-order">#</th>
+              <th className="col-name">Batter</th>
+              <th className="col-pos">Pos</th>
+              <th className="col-stat">
+                BA vs {handLabel}
+                <span className="col-sub">30 days</span>
+              </th>
+              <th className="col-stat">
+                xBA
+                <span className="col-sub">season</span>
+              </th>
+              <th className="col-stat">
+                xwOBA
+                <span className="col-sub">season</span>
+              </th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {batters.map((b) => (
+              <tr key={b.player_id}>
+                <td className="col-order batting-order">{b.batting_order}</td>
+                <td className="col-name batter-name-cell">{b.name}</td>
+                <td className="col-pos position-cell">{b.position}</td>
+                <td className={`col-stat stat-cell ${baClass(b.ba_vs_hand)}`}>
+                  {b.ba_vs_hand != null ? (
+                    <>
+                      {fmt3(b.ba_vs_hand)}
+                      {b.pa_vs_hand > 0 && (
+                        <span className="pa-note">{b.pa_vs_hand} PA</span>
+                      )}
+                    </>
+                  ) : '—'}
+                </td>
+                <td className={`col-stat stat-cell ${xbaClass(b.xba, b.ba_vs_hand)}`}>
+                  {fmt3(b.xba)}
+                </td>
+                <td className={`col-stat stat-cell ${xwobaClass(b.xwoba)}`}>
+                  {fmt3(b.xwoba)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {vsPitcherBatters.length > 0 && (
         <div className="vs-sp-section">
-          <div className="vs-sp-header">Career vs {pitcher?.name || 'SP'} (10+ AB)</div>
-          <table className="lineup-table vs-sp-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Player</th>
-                <th>AB</th>
-                <th>H</th>
-                <th>BA</th>
-              </tr>
-            </thead>
-            <tbody>
-              {vsPitcherBatters.map((b) => (
-                <tr key={b.player_id}>
-                  <td className="batting-order">{b.batting_order}</td>
-                  <td className="batter-name-cell">{b.name}</td>
-                  <td className="stat-cell">{b.vs_pitcher.ab}</td>
-                  <td className="stat-cell">{b.vs_pitcher.hits}</td>
-                  <td className="stat-cell">{fmt(b.vs_pitcher.ba)}</td>
+          <div className="vs-sp-header">
+            Career vs {pitcher?.name || 'SP'}
+            <span className="vs-sp-qualifier">10+ AB only</span>
+          </div>
+          <div className="lineup-scroll">
+            <table className="lineup-table vs-sp-table">
+              <thead>
+                <tr>
+                  <th className="col-order">#</th>
+                  <th className="col-name">Batter</th>
+                  <th className="col-stat">AB</th>
+                  <th className="col-stat">H</th>
+                  <th className="col-stat">BA</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {vsPitcherBatters.map((b) => (
+                  <tr key={b.player_id}>
+                    <td className="col-order batting-order">{b.batting_order}</td>
+                    <td className="col-name batter-name-cell">{b.name}</td>
+                    <td className="col-stat stat-cell">{b.vs_pitcher.ab}</td>
+                    <td className="col-stat stat-cell">{b.vs_pitcher.hits}</td>
+                    <td className={`col-stat stat-cell ${baClass(b.vs_pitcher.ba)}`}>
+                      {fmt3(b.vs_pitcher.ba)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
